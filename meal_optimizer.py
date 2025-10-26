@@ -9,7 +9,37 @@ try:
 except Exception:
     PULP_AVAILABLE = False
 
-MEAL_TYPES = ["breakfast", "lunch", "dinner", "snack"]
+
+# ========================== CONFIGURATION ==========================
+CONFIG = {
+    # --- Global Nutrient Targets (daily goals) ---
+    "target_calories": 1690,   # total daily calories
+    "target_protein": 150,     # grams
+    "target_carbs": 171,       # grams
+    "target_fat": 45,          # grams
+
+    # --- Number of meals allowed per type ---
+    "meal_counts": {
+        "breakfast": 1,
+        "lunch": 1,
+        "dinner": 1,
+        "snack": 2,   # 👈 two snacks instead of one
+    },
+    # --- Flexibility Controls ---
+    "macro_tolerance": 0.10,   # ±10% flexibility on each macro
+    "calorie_tolerance": 150,  # ±150 kcal flexibility
+    "candidate_cap": 12,       # number of top meals per type to consider
+    "verbose_solver": False,   # True = show solver logs in console
+
+    # --- Meal Structure ---
+    "meal_types": ["breakfast", "lunch", "dinner", "snack"],
+
+    # --- Column Names in meals.csv ---
+    "required_columns": ["meal_name", "type", "protein", "carbs", "fat", "calories", "ingredients"],
+}
+# ====================================================================
+
+MEAL_TYPES = CONFIG["meal_types"]
 
 def normalize_token(s: str) -> str:
     return s.strip().lower().replace(" ", "_")
@@ -21,7 +51,7 @@ def parse_ingredients(cell: str) -> List[str]:
 
 def load_meals(csv_path: str) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
-    needed = ["meal_name", "type", "protein", "carbs", "fat", "calories", "ingredients"]
+    needed = CONFIG["required_columns"]
     missing = [c for c in needed if c not in df.columns]
     if missing:
         raise ValueError(f"CSV is missing columns: {missing}")
@@ -64,6 +94,7 @@ def optimize_day_milp(meals_df: pd.DataFrame,
             return None
 
     model = pulp.LpProblem("DailyMealPlanner", pulp.LpMinimize)
+                          
     x_vars = {}
     for t in MEAL_TYPES:
         if t in fixed:
@@ -76,13 +107,24 @@ def optimize_day_milp(meals_df: pd.DataFrame,
         if t in fixed:
             continue
         subset = by_type[t]
-        model += pulp.lpSum(x_vars[(t, i)] for i in range(len(subset))) == 1
+        required_count = CONFIG["meal_counts"].get(t, 1)
+        model += pulp.lpSum(x_vars[(t, i)] for i in range(len(subset))) == required_count
 
     fixed_rows = list(fixed.values())
     fixed_totals = macro_sum(fixed_rows)
 
+   # --- Macro constraints with soft penalties ---
+    # Add small "slack" variables to let the model deviate slightly if needed
+    slacks = {}
     for macro in ["protein", "carbs", "fat"]:
-        lo, hi = macro_ranges[macro]
+        slacks[macro] = pulp.LpVariable(f"slack_{macro}", lowBound=0)
+
+    for macro in ["protein", "carbs", "fat"]:
+        base_lo, base_hi = macro_ranges[macro]
+        tol = CONFIG["macro_tolerance"]
+        lo = base_lo * (1 - tol)
+        hi = base_hi * (1 + tol)
+
         rem_terms = []
         for t in MEAL_TYPES:
             if t in fixed:
@@ -91,13 +133,21 @@ def optimize_day_milp(meals_df: pd.DataFrame,
             vals = subset[macro].tolist()
             for i, val in enumerate(vals):
                 rem_terms.append(val * x_vars[(t, i)])
+
+        # Combine with already fixed meals
         if rem_terms:
-            model += pulp.lpSum(rem_terms) >= (lo - fixed_totals[macro])
-            model += pulp.lpSum(rem_terms) <= (hi - fixed_totals[macro])
+            expr = pulp.lpSum(rem_terms)
+            # Relax the lower/upper bounds by allowing slack usage
+            model += expr + slacks[macro] >= (lo - fixed_totals[macro])
+            model += expr - slacks[macro] <= (hi - fixed_totals[macro])
         else:
+            # No variable meals of this type, check fixed totals only
             if not (lo <= fixed_totals[macro] <= hi):
                 return None
 
+    # Add a small penalty in the objective for any slack used
+    # (Encourages staying close to macro targets but never infeasible)
+    model += 0.01 * pulp.lpSum(slacks.values())
     if x_vars:
         kcal_terms = []
         for t in MEAL_TYPES:
@@ -109,11 +159,12 @@ def optimize_day_milp(meals_df: pd.DataFrame,
                 kcal_terms.append(k * x_vars[(t, i)])
         total_kcal = pulp.lpSum(kcal_terms) + fixed_totals["calories"]
         z = pulp.LpVariable("abs_dev_kcal", lowBound=0)
-        model += (total_kcal - target_calories) <= z
-        model += (target_calories - total_kcal) <= z
+        tolerance = CONFIG["calorie_tolerance"]
+        model += (total_kcal - target_calories) <= z + tolerance
+        model += (target_calories - total_kcal) <= z + tolerance
         model += z
 
-    status = model.solve(pulp.PULP_CBC_CMD(msg=False))
+    status = model.solve(pulp.PULP_CBC_CMD(msg=CONFIG["verbose_solver"]))
     if pulp.LpStatus[status] != "Optimal":
         return None
 
@@ -137,7 +188,7 @@ def optimize_day_fallback(meals_df: pd.DataFrame,
                           macro_ranges: Dict[str, Tuple[float, float]],
                           target_calories: float) -> Optional[Dict[str, dict]]:
     import itertools
-    CANDIDATE_CAP = 12
+    CANDIDATE_CAP = CONFIG["candidate_cap"]                       
     fixed_names = {v["meal_name"] for v in fixed.values()}
     pool = meals_df[~meals_df["meal_name"].isin(fixed_names)].copy()
     by_type = {}
