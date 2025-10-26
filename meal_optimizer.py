@@ -57,9 +57,15 @@ def optimize_day_milp(meals_df: pd.DataFrame,
                       fixed: Dict[str, dict],
                       macro_ranges: Dict[str, Tuple[float, float]],
                       target_calories: float) -> Optional[Dict[str, dict]]:
-    if not PULP_AVAILABLE:
-        return optimize_day_fallback(meals_df, fixed, macro_ranges, target_calories)
+    """
+    Simple, stable MILP optimizer: pick 1 meal per type (or per CONFIG["meal_counts"])
+    to hit macro and calorie targets within tolerance.
+    """
 
+    if not PULP_AVAILABLE:
+        return None
+
+    # ---- Preprocess pools ----
     fixed_names = {v["meal_name"] for v in fixed.values()}
     pool = meals_df[~meals_df["meal_name"].isin(fixed_names)].copy()
     by_type = {t: pool[pool["type"] == t].reset_index(drop=True) for t in MEAL_TYPES}
@@ -68,95 +74,79 @@ def optimize_day_milp(meals_df: pd.DataFrame,
             return None
 
     model = pulp.LpProblem("DailyMealPlanner", pulp.LpMinimize)
-                          
+
+    # ---- Decision vars ----
     x_vars = {}
     for t in MEAL_TYPES:
         if t in fixed:
             continue
         subset = by_type[t]
         for i in range(len(subset)):
-            x_vars[(t, i)] = pulp.LpVariable(f"x_{t}_{i}", lowBound=0, upBound=1, cat="Binary")
+            x_vars[(t, i)] = pulp.LpVariable(f"x_{t}_{i}", cat="Binary")
 
+    # ---- Each meal type must pick required number ----
     for t in MEAL_TYPES:
         if t in fixed:
             continue
         subset = by_type[t]
-        required_count = CONFIG["meal_counts"].get(t, 1)
-        model += pulp.lpSum(x_vars[(t, i)] for i in range(len(subset))) == required_count
+        required = CONFIG["meal_counts"].get(t, 1)
+        model += pulp.lpSum(x_vars[(t, i)] for i in range(len(subset))) == required
 
-    fixed_rows = list(fixed.values())
-    fixed_totals = macro_sum(fixed_rows)
+    # ---- Macro + calorie sums ----
+    fixed_totals = macro_sum(list(fixed.values()))
 
-   # --- Macro constraints with soft penalties ---
-    # Add small "slack" variables to let the model deviate slightly if needed
-    slacks = {}
-    for macro in ["protein", "carbs", "fat"]:
-        slacks[macro] = pulp.LpVariable(f"slack_{macro}", lowBound=0)
-    
-    for macro in ["protein", "carbs", "fat"]:
-        base_lo, base_hi = macro_ranges[macro]
-        tol = CONFIG["macro_tolerance"]
-        lo = base_lo * (1 - tol)
-        hi = base_hi * (1 + tol)
-    
-        rem_terms = []
-        for t in MEAL_TYPES:
-            if t in fixed:
-                continue
-            subset = by_type[t]
-            vals = subset[macro].tolist()
-            for i, val in enumerate(vals):
-                rem_terms.append(val * x_vars[(t, i)])
-    
-        if rem_terms:
-            expr = pulp.lpSum(rem_terms)
-            # ✅ Use total (fixed + variable) for bounds
-            model += expr + fixed_totals[macro] + slacks[macro] >= lo
-            model += expr + fixed_totals[macro] - slacks[macro] <= hi
-        else:
-            if not (lo <= fixed_totals[macro] <= hi):
-                return None
+    # total macros (fixed + variable)
+    total_macros = {}
+    for macro in ["protein", "carbs", "fat", "calories"]:
+        expr = pulp.lpSum(by_type[t].iloc[i][macro] * x_vars[(t, i)]
+                          for t in MEAL_TYPES if t not in fixed
+                          for i in range(len(by_type[t]))) + fixed_totals[macro]
+        total_macros[macro] = expr
 
-    # Add a small penalty in the objective for any slack used
-    # (Encourages staying close to macro targets but never infeasible)
-    objective = 0.01 * pulp.lpSum(slacks.values())
-    if x_vars:
-        kcal_terms = []
-        for t in MEAL_TYPES:
-            if t in fixed:
-                continue
-            subset = by_type[t]
-            kcals = subset["calories"].tolist()
-            for i, k in enumerate(kcals):
-                kcal_terms.append(k * x_vars[(t, i)])
-        total_kcal = pulp.lpSum(kcal_terms) + fixed_totals["calories"]
-        z = pulp.LpVariable("abs_dev_kcal", lowBound=0)
-        tolerance = CONFIG["calorie_tolerance"]
-        model += (total_kcal - target_calories) <= z + tolerance
-        model += (target_calories - total_kcal) <= z + tolerance
-        objective += z  # ✅ add calorie deviation to the same objective
-    
-    # Set the final objective
-    model += objective
+    # ---- Tolerances ----
+    tol = CONFIG["macro_tolerance"]
+    lo_hi = {m: (macro_ranges[m][0]*(1-tol), macro_ranges[m][1]*(1+tol))
+             for m in ["protein","carbs","fat"]}
 
+    # ---- Constraints ----
+    for m,(lo,hi) in lo_hi.items():
+        model += total_macros[m] >= lo
+        model += total_macros[m] <= hi
+
+    cal_tol = CONFIG["calorie_tolerance"]
+    model += total_macros["calories"] >= target_calories - cal_tol
+    model += total_macros["calories"] <= target_calories + cal_tol
+
+    # ---- Objective: minimize absolute calorie deviation ----
+    dev = pulp.LpVariable("dev", lowBound=0)
+    model += total_macros["calories"] - target_calories <= dev
+    model += target_calories - total_macros["calories"] <= dev
+    model += dev
+
+    # ---- Solve ----
     status = model.solve(pulp.PULP_CBC_CMD(msg=CONFIG["verbose_solver"]))
     if pulp.LpStatus[status] != "Optimal":
+        print("⚠️ Infeasible:", pulp.LpStatus[status])
         return None
 
-    selection = {**fixed}
+    # ---- Build selection ----
+    selection = dict(fixed)
     for t in MEAL_TYPES:
         if t in fixed:
             continue
         subset = by_type[t]
-        pick = None
-        for i in range(len(subset)):
-            if pulp.value(x_vars[(t, i)]) > 0.5:
-                pick = subset.iloc[i].to_dict()
-                break
-        if pick is None:
+        chosen = subset.loc[[i for i in range(len(subset))
+                             if pulp.value(x_vars[(t, i)]) > 0.5]]
+        if CONFIG["meal_counts"].get(t,1) > 1:
+            selection[t] = chosen.to_dict("records")
+        elif not chosen.empty:
+            selection[t] = chosen.iloc[0].to_dict()
+        else:
             return None
-        selection[t] = pick
     return selection
+
+
+
 
 def optimize_day_fallback(meals_df: pd.DataFrame,
                           fixed: Dict[str, dict],
