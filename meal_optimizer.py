@@ -92,13 +92,13 @@ def optimize_day_milp(meals_df: pd.DataFrame,
     slacks = {}
     for macro in ["protein", "carbs", "fat"]:
         slacks[macro] = pulp.LpVariable(f"slack_{macro}", lowBound=0)
-
+    
     for macro in ["protein", "carbs", "fat"]:
         base_lo, base_hi = macro_ranges[macro]
         tol = CONFIG["macro_tolerance"]
         lo = base_lo * (1 - tol)
         hi = base_hi * (1 + tol)
-
+    
         rem_terms = []
         for t in MEAL_TYPES:
             if t in fixed:
@@ -107,21 +107,19 @@ def optimize_day_milp(meals_df: pd.DataFrame,
             vals = subset[macro].tolist()
             for i, val in enumerate(vals):
                 rem_terms.append(val * x_vars[(t, i)])
-
-        # Combine with already fixed meals
+    
         if rem_terms:
             expr = pulp.lpSum(rem_terms)
-            # Relax the lower/upper bounds by allowing slack usage
-            model += expr + slacks[macro] >= (lo - fixed_totals[macro])
-            model += expr - slacks[macro] <= (hi - fixed_totals[macro])
+            # ✅ Use total (fixed + variable) for bounds
+            model += expr + fixed_totals[macro] + slacks[macro] >= lo
+            model += expr + fixed_totals[macro] - slacks[macro] <= hi
         else:
-            # No variable meals of this type, check fixed totals only
             if not (lo <= fixed_totals[macro] <= hi):
                 return None
 
     # Add a small penalty in the objective for any slack used
     # (Encourages staying close to macro targets but never infeasible)
-    model += 0.01 * pulp.lpSum(slacks.values())
+    objective = 0.01 * pulp.lpSum(slacks.values())
     if x_vars:
         kcal_terms = []
         for t in MEAL_TYPES:
@@ -136,7 +134,10 @@ def optimize_day_milp(meals_df: pd.DataFrame,
         tolerance = CONFIG["calorie_tolerance"]
         model += (total_kcal - target_calories) <= z + tolerance
         model += (target_calories - total_kcal) <= z + tolerance
-        model += z
+        objective += z  # ✅ add calorie deviation to the same objective
+    
+    # Set the final objective
+    model += objective
 
     status = model.solve(pulp.PULP_CBC_CMD(msg=CONFIG["verbose_solver"]))
     if pulp.LpStatus[status] != "Optimal":
