@@ -19,8 +19,7 @@ DEFAULT_MACRO_RANGES = {
     "carbs": (CONFIG["target_carbs"], CONFIG["target_carbs"]),
     "fat": (CONFIG["target_fat"], CONFIG["target_fat"]),
 }
-target_calories = CONFIG["target_calories"]
-TARGET_CALORIES = 1690
+TARGET_CALORIES = CONFIG["target_calories"]
 
 def load_state() -> Dict:
     if os.path.exists(DATA_PATH):
