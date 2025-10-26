@@ -14,10 +14,11 @@ DATA_PATH = os.getenv("DATA_JSON", "data.json")
 MEALS_CSV = os.getenv("MEALS_CSV", "meals.csv")
 
 DEFAULT_MACRO_RANGES = {
-    "protein": (140, 160),
-    "carbs":   (160, 180),
-    "fat":     (40,  50),
+    "protein": (CONFIG["target_protein"], CONFIG["target_protein"]),
+    "carbs": (CONFIG["target_carbs"], CONFIG["target_carbs"]),
+    "fat": (CONFIG["target_fat"], CONFIG["target_fat"]),
 }
+target_calories = CONFIG["target_calories"]
 TARGET_CALORIES = 1690
 
 def load_state() -> Dict:
