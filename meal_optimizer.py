@@ -234,7 +234,10 @@ def format_plan(selection: Dict[str, dict]) -> str:
     totals = macro_sum([selection[t] for t in MEAL_TYPES if t in selection])
     for t in MEAL_TYPES:
         if t in selection:
-            r = selection[t]
-            parts.append(f"{t.title():<9}: {r['meal_name']}  ({int(r['protein'])}P {int(r['carbs'])}C {int(r['fat'])}F, {int(r['calories'])} kcal)")
-    parts.append(f"Totals → {int(totals['protein'])}P  {int(totals['carbs'])}C  {int(totals['fat'])}F, {int(totals['calories'])} kcal")
+            if isinstance(selection[t], list):  # multiple meals of same type
+                for idx, r in enumerate(selection[t], 1):
+                    parts.append(f"{t.title()} {idx}: {r['meal_name']}  ({int(r['protein'])}P {int(r['carbs'])}C {int(r['fat'])}F, {int(r['calories'])} kcal)")
+            else:
+                r = selection[t]
+                parts.append(f"{t.title():<9}: {r['meal_name']}  ({int(r['protein'])}P {int(r['carbs'])}C {int(r['fat'])}F, {int(r['calories'])} kcal)")
     return "\n".join(parts)
