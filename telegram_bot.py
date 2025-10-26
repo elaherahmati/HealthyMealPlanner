@@ -9,7 +9,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Callb
 from meal_optimizer import (
     MEAL_TYPES, load_meals, filter_by_unavailable, optimize_day_milp, format_plan
 )
-from meal_optimizer import CONFIG
+from config import CONFIG
 
 DATA_PATH = os.getenv("DATA_JSON", "data.json")
 MEALS_CSV = os.getenv("MEALS_CSV", "meals.csv")
