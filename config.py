@@ -19,7 +19,7 @@ CONFIG = {
         "breakfast": 1,
         "lunch": 1,
         "dinner": 1,
-        "snack": 2,   # two snacks allowed
+        "snack": 1,   # two snacks allowed
     },
 
     # --- Required columns in meals.csv ---
