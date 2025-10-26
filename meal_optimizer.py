@@ -9,34 +9,8 @@ try:
 except Exception:
     PULP_AVAILABLE = False
 
+from config import CONFIG
 
-# ========================== CONFIGURATION ==========================
-CONFIG = {
-    # --- Global Nutrient Targets (daily goals) ---
-    "target_calories": 1690,   # total daily calories
-    "target_protein": 150,     # grams
-    "target_carbs": 171,       # grams
-    "target_fat": 45,          # grams
-
-    # --- Number of meals allowed per type ---
-    "meal_counts": {
-        "breakfast": 1,
-        "lunch": 1,
-        "dinner": 1,
-        "snack": 2,   # 👈 two snacks instead of one
-    },
-    # --- Flexibility Controls ---
-    "macro_tolerance": 0.10,   # ±10% flexibility on each macro
-    "calorie_tolerance": 150,  # ±150 kcal flexibility
-    "candidate_cap": 12,       # number of top meals per type to consider
-    "verbose_solver": False,   # True = show solver logs in console
-
-    # --- Meal Structure ---
-    "meal_types": ["breakfast", "lunch", "dinner", "snack"],
-
-    # --- Column Names in meals.csv ---
-    "required_columns": ["meal_name", "type", "protein", "carbs", "fat", "calories", "ingredients"],
-}
 # ====================================================================
 
 MEAL_TYPES = CONFIG["meal_types"]
